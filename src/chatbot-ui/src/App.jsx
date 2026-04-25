@@ -1,15 +1,24 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useMsal } from '@azure/msal-react';
 import ChatWindow from './components/ChatWindow.jsx';
 import InputBar from './components/InputBar.jsx';
 
 export default function App({ apiScope }) {
-  const [messages, setMessages]   = useState([]);
-  const [streaming, setStreaming] = useState(false);
-  const [error, setError]         = useState(null);
+  const [messages, setMessages]       = useState([]);
+  const [streaming, setStreaming]     = useState(false);
+  const [error, setError]             = useState(null);
+  const [workflows, setWorkflows]     = useState([]);
+  const [workflowId, setWorkflowId]   = useState('default');
 
   const { instance, accounts } = useMsal();
   const isAuthenticated = accounts.length > 0;
+
+  useEffect(() => {
+    fetch('/api/workflows')
+      .then(r => r.ok ? r.json() : [])
+      .then(list => { if (list.length) setWorkflows(list); })
+      .catch(() => {});
+  }, []);
 
   // ── Token acquisition ────────────────────────────────────────────────────────
   // Tries silent acquisition first; falls back to popup if the token has expired
@@ -88,7 +97,7 @@ export default function App({ apiScope }) {
           'Content-Type': 'application/json',
           ...(token && { Authorization: `Bearer ${token}` }),
         },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, workflowId }),
       });
 
       if (!response.ok) {
@@ -134,9 +143,15 @@ export default function App({ apiScope }) {
     } finally {
       setStreaming(false);
     }
-  }, [messages, streaming, acquireToken]);
+  }, [messages, streaming, acquireToken, workflowId]);
 
   const clearChat = useCallback(() => {
+    setMessages([]);
+    setError(null);
+  }, []);
+
+  const handleWorkflowChange = useCallback((id) => {
+    setWorkflowId(id);
     setMessages([]);
     setError(null);
   }, []);
@@ -154,6 +169,18 @@ export default function App({ apiScope }) {
         </div>
 
         <div className="header-actions">
+          {workflows.length > 1 && (
+            <select
+              className="workflow-select"
+              value={workflowId}
+              onChange={e => handleWorkflowChange(e.target.value)}
+              aria-label="Select workflow"
+            >
+              {workflows.map(w => (
+                <option key={w.id} value={w.id}>{w.name}</option>
+              ))}
+            </select>
+          )}
           {apiScope && isAuthenticated && (
             <span className="header-user">{accounts[0]?.name}</span>
           )}

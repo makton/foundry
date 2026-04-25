@@ -81,6 +81,20 @@ html, body, #root {
 }
 .btn-clear:hover { background: rgba(255, 255, 255, .28); }
 
+.workflow-select {
+  background: rgba(255, 255, 255, .15);
+  border: 1px solid rgba(255, 255, 255, .35);
+  color: #fff;
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: .82rem;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+}
+.workflow-select option { background: var(--brand-dark); color: #fff; }
+
 /* ── Main layout ──────────────────────────────────────────────────────────── */
 .app-main {
   display: flex;

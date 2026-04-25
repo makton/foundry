@@ -1,5 +1,7 @@
 'use strict';
 
+const fs      = require('fs');
+const path    = require('path');
 const express = require('express');
 const jwt     = require('jsonwebtoken');
 const jwksRsa = require('jwks-rsa');
@@ -12,9 +14,27 @@ app.use(express.json({ limit: '256kb' }));
 const ENDPOINT   = process.env.AZURE_OPENAI_ENDPOINT;
 const DEPLOYMENT = process.env.AZURE_OPENAI_CHAT_DEPLOYMENT || 'gpt-4o';
 const API_VER    = process.env.AZURE_OPENAI_API_VERSION    || '2024-10-21';
-const SYSTEM_PROMPT = process.env.CHATBOT_SYSTEM_PROMPT ||
-  'You are a helpful AI assistant for an Azure AI Foundry platform. ' +
-  'Answer clearly and concisely. When referencing documents, cite your sources.';
+
+// ── Workflow definitions ───────────────────────────────────────────────────────
+// Loaded once at startup from ./workflows/*.json.
+// Each file must contain: { id, name, description, system_prompt, parameters }
+// Clients may request a workflow by id; the server validates the id and rejects
+// anything not in this map — no arbitrary prompt injection is possible.
+const workflowsDir = path.join(__dirname, 'workflows');
+const workflows    = new Map();
+
+for (const file of fs.readdirSync(workflowsDir).filter(f => f.endsWith('.json'))) {
+  const w = JSON.parse(fs.readFileSync(path.join(workflowsDir, file), 'utf8'));
+  if (!w.id || !w.name || !w.system_prompt) {
+    throw new Error(`Workflow file ${file} is missing required fields (id, name, system_prompt)`);
+  }
+  workflows.set(w.id, w);
+}
+
+const defaultWorkflow = workflows.get('default');
+if (!defaultWorkflow) throw new Error('A workflow with id "default" is required in ./workflows/');
+
+console.log(`Loaded ${workflows.size} workflow(s): ${[...workflows.keys()].join(', ')}`);
 
 // Maximum number of conversation turns accepted per request
 const MAX_MESSAGES = 40;
@@ -127,6 +147,12 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+// ── Workflow catalogue — returns public metadata only (no system prompts) ──────
+app.get('/api/workflows', (_req, res) => {
+  const list = [...workflows.values()].map(({ id, name, description }) => ({ id, name, description }));
+  res.json(list);
+});
+
 // ── Chat completions with SSE streaming ───────────────────────────────────────
 app.post('/api/chat', authenticate, async (req, res) => {
   const socketAddr = req.socket.remoteAddress;
@@ -134,7 +160,12 @@ app.post('/api/chat', authenticate, async (req, res) => {
     return res.status(429).json({ error: 'Too many requests — try again in a minute.' });
   }
 
-  const { messages } = req.body;  // systemPrompt is intentionally not accepted from clients
+  // workflowId is validated against the server-side workflow map.
+  // Unknown or missing ids fall back to the default workflow.
+  const { messages, workflowId } = req.body;
+  const workflow = (workflowId && workflows.has(workflowId))
+    ? workflows.get(workflowId)
+    : defaultWorkflow;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages array is required' });
@@ -160,15 +191,13 @@ app.post('/api/chat', authenticate, async (req, res) => {
   res.flushHeaders();
 
   try {
+    const { system_prompt, parameters = {} } = workflow;
     const stream = await client().chat.completions.create({
-      model: DEPLOYMENT,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...messages,
-      ],
-      stream: true,
-      max_tokens: 2048,
-      temperature: 0.7,
+      model:       DEPLOYMENT,
+      messages:    [{ role: 'system', content: system_prompt }, ...messages],
+      stream:      true,
+      max_tokens:  parameters.max_tokens  ?? 2048,
+      temperature: parameters.temperature ?? 0.7,
     });
 
     for await (const chunk of stream) {
