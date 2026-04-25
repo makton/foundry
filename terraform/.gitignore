@@ -1,0 +1,31 @@
+# Terraform state — never commit
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform plan output
+*.tfplan
+*.plan
+tfplan
+tfplan.txt
+
+# Terraform variable files with secrets
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Terraform working directory
+.terraform/
+.terraform.lock.hcl
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Override files (local developer overrides)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Environment-specific secrets (create from *.tfvars.example)
+environments/secrets.tfvars

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(chmod +x /Users/makton/Documents/git/foundry/scripts/build-push-chatbot.sh)"
+    ]
+  }
+}

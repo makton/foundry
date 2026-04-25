@@ -1,0 +1,15 @@
+{
+  "name": "foundry-chatbot-server",
+  "version": "1.0.0",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "dev:server": "node --watch server.js"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.4.1",
+    "express": "^4.21.2",
+    "openai": "^4.77.0"
+  }
+}

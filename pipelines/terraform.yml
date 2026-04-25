@@ -1,0 +1,168 @@
+# Terraform CI/CD — plan + apply for every environment
+#
+# ── One-time ADO setup ────────────────────────────────────────────────────────
+# Variable groups (Pipelines → Library → Variable groups):
+#
+#   vg-foundry-dev
+#     SUBSCRIPTION_ID    – Azure subscription ID for dev
+#     TF_STATE_RG        – Resource group that owns the state storage account
+#     TF_STATE_SA        – Storage account name  (e.g. sttfstatefoundry)
+#     TF_STATE_CONTAINER – Blob container         (e.g. tfstate)
+#     TF_STATE_KEY       – State file path        (e.g. foundry/dev/terraform.tfstate)
+#
+#   vg-foundry-prod      – same variable names, prod values
+#     TF_STATE_KEY       – e.g. foundry/prod/terraform.tfstate
+#
+# Service connections (Project settings → Service connections):
+#   sc-foundry-dev   – Workload Identity Federation → dev subscription
+#   sc-foundry-prod  – Workload Identity Federation → prod subscription
+#
+# Environments (Pipelines → Environments):
+#   foundry-dev   – no approval gates (auto-apply on main)
+#   foundry-prod  – add Approvals & Checks → required approvers before apply
+#
+# terraform/terraform.tf: uncomment the `backend "azurerm" {}` block so that
+# -backend-config flags take effect. Leave all values inside it empty — they
+# are injected at runtime by the init step.
+# ─────────────────────────────────────────────────────────────────────────────
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/**
+
+variables:
+  TF_VERSION: '1.11.4'
+
+stages:
+  # ── Validate ─────────────────────────────────────────────────────────────────
+  # Runs on every push and PR. No Azure credentials required.
+  - stage: validate
+    displayName: Validate
+    jobs:
+      - job: validate
+        displayName: fmt + validate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: |
+              curl -fsSL \
+                "https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip" \
+                -o /tmp/tf.zip
+              unzip -q /tmp/tf.zip -d /tmp
+              sudo mv /tmp/terraform /usr/local/bin/
+              terraform version
+            displayName: Install Terraform
+
+          - script: terraform fmt -check -diff -recursive
+            workingDirectory: $(Build.SourcesDirectory)/terraform
+            displayName: fmt check
+
+          - script: |
+              terraform init -backend=false -input=false
+              terraform validate
+            workingDirectory: $(Build.SourcesDirectory)/terraform
+            displayName: validate
+
+  # ── Plan — dev and prod run in parallel after validate ────────────────────────
+  - stage: plan_dev
+    displayName: Plan (dev)
+    dependsOn: validate
+    jobs:
+      - job: plan
+        displayName: terraform plan
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - group: vg-foundry-dev
+        steps:
+          - template: templates/tf-plan-steps.yml
+            parameters:
+              environment: dev
+              serviceConnection: sc-foundry-dev
+
+  - stage: plan_prod
+    displayName: Plan (prod)
+    dependsOn: validate
+    jobs:
+      - job: plan
+        displayName: terraform plan
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - group: vg-foundry-prod
+        steps:
+          - template: templates/tf-plan-steps.yml
+            parameters:
+              environment: prod
+              serviceConnection: sc-foundry-prod
+
+  # ── Apply dev — automatic on main, skipped on PRs ─────────────────────────────
+  - stage: apply_dev
+    displayName: Apply (dev)
+    dependsOn: plan_dev
+    condition: |
+      and(
+        succeeded('plan_dev'),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+        ne(variables['Build.Reason'], 'PullRequest')
+      )
+    jobs:
+      - deployment: apply
+        displayName: terraform apply
+        pool:
+          vmImage: ubuntu-latest
+        environment: foundry-dev
+        variables:
+          - group: vg-foundry-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: templates/tf-apply-steps.yml
+                  parameters:
+                    environment: dev
+                    serviceConnection: sc-foundry-dev
+
+  # ── Apply prod — after dev succeeds; approval gate on foundry-prod environment ─
+  - stage: apply_prod
+    displayName: Apply (prod)
+    dependsOn:
+      - apply_dev
+      - plan_prod
+    condition: |
+      and(
+        succeeded('apply_dev'),
+        succeeded('plan_prod'),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+        ne(variables['Build.Reason'], 'PullRequest')
+      )
+    jobs:
+      - deployment: apply
+        displayName: terraform apply
+        pool:
+          vmImage: ubuntu-latest
+        environment: foundry-prod
+        variables:
+          - group: vg-foundry-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: templates/tf-apply-steps.yml
+                  parameters:
+                    environment: prod
+                    serviceConnection: sc-foundry-prod
