@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="accuracy-evaluator", docs_url=None, redoc_url=None)
 
-_MAX_MESSAGES       = 40
-_MAX_CONTENT_CHARS  = 8000
-_MAX_RESPONSE_CHARS = 4000
-_MAX_ID_CHARS       = 256
+_MAX_MESSAGES               = 40
+_MAX_CONTENT_CHARS          = 8000
+_MAX_RESPONSE_CHARS         = 4000
+_MAX_ID_CHARS               = 256
+_MAX_RETRIEVED_CONTEXT_CHARS = 20_000
 
 
 class ChatMessage(BaseModel):
@@ -56,6 +57,7 @@ class InvocationRequest(BaseModel):
     workflow_id:        str = "default"
     messages:           list[ChatMessage]
     assistant_response: str
+    retrieved_context:  str = ""  # RAG chunks; non-empty switches groundedness rubric
 
     @field_validator("request_id", "session_id", "user_id", "workflow_id")
     @classmethod
@@ -76,6 +78,13 @@ class InvocationRequest(BaseModel):
     def response_length(cls, v: str) -> str:
         if len(v) > _MAX_RESPONSE_CHARS:
             raise ValueError(f"assistant_response too long (max {_MAX_RESPONSE_CHARS} chars)")
+        return v
+
+    @field_validator("retrieved_context")
+    @classmethod
+    def context_length(cls, v: str) -> str:
+        if len(v) > _MAX_RETRIEVED_CONTEXT_CHARS:
+            raise ValueError(f"retrieved_context too long (max {_MAX_RETRIEVED_CONTEXT_CHARS} chars)")
         return v
 
 
@@ -103,6 +112,7 @@ async def invocations(payload: InvocationRequest) -> JSONResponse:
         evaluation = evaluate(
             messages=[m.model_dump() for m in payload.messages],
             assistant_response=payload.assistant_response,
+            retrieved_context=payload.retrieved_context,
         )
     except Exception as exc:
         logger.exception("Evaluation failed for session=%s: %s", payload.session_id, exc)

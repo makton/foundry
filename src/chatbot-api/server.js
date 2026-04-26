@@ -273,8 +273,10 @@ function queueClient() {
 const QUEUE_MAX_RAW_BYTES = 49000;
 const EVAL_RESPONSE_MAX_CHARS = 3000;
 
-function buildEvalPayload(requestId, sessionId, userId, workflowId, messages, assistantResponse) {
-  const responseText = assistantResponse.slice(0, EVAL_RESPONSE_MAX_CHARS);
+function buildEvalPayload(requestId, sessionId, userId, workflowId, messages, assistantResponse, retrievedContext) {
+  const responseText  = assistantResponse.slice(0, EVAL_RESPONSE_MAX_CHARS);
+  // Match agent.py _MAX_RETRIEVED_CONTEXT_CHARS limit
+  const contextText   = (retrievedContext || '').slice(0, 20_000);
   let trimmedMessages = messages;
   while (trimmedMessages.length > 1) {
     const json = JSON.stringify({
@@ -284,6 +286,7 @@ function buildEvalPayload(requestId, sessionId, userId, workflowId, messages, as
       workflow_id:        workflowId,
       messages:           trimmedMessages,
       assistant_response: responseText,
+      retrieved_context:  contextText,
     });
     if (Buffer.byteLength(json, 'utf8') <= QUEUE_MAX_RAW_BYTES) {
       return Buffer.from(json).toString('base64');
@@ -297,14 +300,15 @@ function buildEvalPayload(requestId, sessionId, userId, workflowId, messages, as
     workflow_id:        workflowId,
     messages:           trimmedMessages,
     assistant_response: responseText,
+    retrieved_context:  contextText,
   })).toString('base64');
 }
 
 // Fire-and-forget: enqueue an evaluation job without blocking the SSE response.
-function enqueueEval(requestId, sessionId, userId, workflowId, messages, assistantResponse) {
+function enqueueEval(requestId, sessionId, userId, workflowId, messages, assistantResponse, retrievedContext) {
   Promise.resolve().then(async () => {
     try {
-      const encoded = buildEvalPayload(requestId, sessionId, userId, workflowId, messages, assistantResponse);
+      const encoded = buildEvalPayload(requestId, sessionId, userId, workflowId, messages, assistantResponse, retrievedContext);
       await queueClient().sendMessage(encoded);
     } catch (err) {
       console.error('Eval enqueue error:', err.message);
@@ -465,6 +469,7 @@ app.post('/api/chat', authenticate, async (req, res) => {
         workflow.id,
         messages,
         responseText,
+        retrievedContext,
       );
     }
   } catch (err) {
