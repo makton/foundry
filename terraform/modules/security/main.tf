@@ -23,6 +23,7 @@ resource "azurerm_key_vault" "main" {
   purge_protection_enabled   = true
 
   # Deny public access — all traffic via private endpoint
+  enable_rbac_authorization     = true
   public_network_access_enabled = false
 
   network_acls {

@@ -152,6 +152,9 @@ resource "azurerm_linux_function_app" "main" {
     # ── Monitoring ──
     APPLICATIONINSIGHTS_CONNECTION_STRING = var.application_insights_connection_string
     ApplicationInsightsAgent_EXTENSION_VERSION = "~3"
+
+    # ── VNet content routing ──
+    WEBSITE_CONTENTOVERVNET = "1"
   }
 
   site_config {

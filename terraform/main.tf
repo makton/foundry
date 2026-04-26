@@ -325,8 +325,8 @@ module "app_gateway" {
 # The Function App reads these via QueueTrigger (private endpoint, no public access).
 
 resource "azurerm_storage_queue" "eval_jobs" {
-  name                 = var.eval_jobs_queue_name
-  storage_account_name = module.storage.storage_account_name
+  name               = var.eval_jobs_queue_name
+  storage_account_id = module.storage.storage_account_id
 }
 
 module "function_app" {
