@@ -20,6 +20,8 @@ const express = require('express');
 const jwt     = require('jsonwebtoken');
 const jwksRsa = require('jwks-rsa');
 const { AzureOpenAI } = require('openai');
+const { QueueServiceClient } = require('@azure/storage-queue');
+const { SearchClient, AzureKeyCredential } = require('@azure/search-documents');
 const { DefaultAzureCredential, getBearerTokenProvider } = require('@azure/identity');
 
 const app = express();
@@ -38,6 +40,22 @@ const LOG_MESSAGE_CONTENT = process.env.LOG_MESSAGE_CONTENT === 'true';
 // the assembled response text are written to telemetry as OpenAIRequest /
 // OpenAIResponse events. Implies full content logging — enable with care.
 const LOG_OPENAI_IO = process.env.LOG_OPENAI_IO === 'true';
+
+// When true, a JSON evaluation job is enqueued to eval-jobs after every completed chat.
+// The Function App picks it up and forwards it to the Foundry Hosted Agent for scoring.
+const EVAL_QUEUE_ENABLED   = process.env.EVAL_QUEUE_ENABLED === 'true';
+const STORAGE_ACCOUNT_NAME = process.env.STORAGE_ACCOUNT_NAME;
+const EVAL_JOBS_QUEUE_NAME = process.env.EVAL_JOBS_QUEUE_NAME || 'eval-jobs';
+
+if (EVAL_QUEUE_ENABLED && !STORAGE_ACCOUNT_NAME) {
+  throw new Error('STORAGE_ACCOUNT_NAME must be set when EVAL_QUEUE_ENABLED=true');
+}
+
+// ── RAG / retrieval config ─────────────────────────────────────────────────────
+const SEARCH_ENDPOINT        = process.env.AZURE_AI_SEARCH_ENDPOINT;
+const SEARCH_INDEX_NAME      = process.env.AZURE_AI_SEARCH_INDEX_NAME || 'foundry-chunks';
+const EMBEDDING_DEPLOYMENT   = process.env.AZURE_OPENAI_EMBEDDING_DEPLOYMENT;
+const RETRIEVAL_TOP_K        = parseInt(process.env.RETRIEVAL_TOP_K || '5', 10);
 
 // ── Telemetry ─────────────────────────────────────────────────────────────────
 // Fire-and-forget custom events written to Application Insights → Log Analytics.
@@ -181,6 +199,120 @@ function client() {
   return _client;
 }
 
+// Lazy-init search client — reuse the same managed-identity credential
+let _searchClient;
+function searchClient() {
+  if (!_searchClient) {
+    const credential = new DefaultAzureCredential({
+      managedIdentityClientId: process.env.AZURE_CLIENT_ID,
+    });
+    _searchClient = new SearchClient(SEARCH_ENDPOINT, SEARCH_INDEX_NAME, credential);
+  }
+  return _searchClient;
+}
+
+// Embeds the user query and fetches top-k chunks from AI Search.
+// Returns a formatted string to inject into the system prompt, or '' on failure.
+async function retrieveContext(userQuery, topK) {
+  if (!SEARCH_ENDPOINT || !EMBEDDING_DEPLOYMENT) return '';
+  try {
+    const embResp = await client().embeddings.create({
+      model: EMBEDDING_DEPLOYMENT,
+      input: userQuery,
+      dimensions: 1536,
+    });
+    const vector = embResp.data[0].embedding;
+
+    const results = await searchClient().search(userQuery, {
+      vectorSearchOptions: {
+        queries: [{
+          kind:      'vector',
+          vector,
+          kNearestNeighborsCount: topK,
+          fields:    ['content_vector'],
+        }],
+      },
+      queryType:    'semantic',
+      semanticSearchOptions: { configurationName: 'default' },
+      select:       ['content', 'source'],
+      top:          topK,
+    });
+
+    const chunks = [];
+    for await (const r of results.results) {
+      chunks.push(`[Source: ${r.document.source}]\n${r.document.content}`);
+    }
+    if (!chunks.length) return '';
+    return `## Retrieved Context\n\n${chunks.join('\n\n---\n\n')}`;
+  } catch (err) {
+    console.warn('Retrieval failed (degrading gracefully):', err.message);
+    return '';
+  }
+}
+
+// Lazy-init queue client — same managed-identity pattern as the OpenAI client
+let _queueClient;
+function queueClient() {
+  if (!_queueClient) {
+    const credential = new DefaultAzureCredential({
+      managedIdentityClientId: process.env.AZURE_CLIENT_ID,
+    });
+    const queueServiceClient = new QueueServiceClient(
+      `https://${STORAGE_ACCOUNT_NAME}.queue.core.windows.net`,
+      credential,
+    );
+    _queueClient = queueServiceClient.getQueueClient(EVAL_JOBS_QUEUE_NAME);
+  }
+  return _queueClient;
+}
+
+// Azure Storage Queue hard limit: 64 KB per message (base64-encoded).
+// Base64 expands 4:3, so the raw JSON must stay under 64*1024*3/4 = 49152 bytes.
+// Long conversations are trimmed from the oldest end; the evaluator only needs
+// recent context to assess relevance and groundedness of the final response.
+const QUEUE_MAX_RAW_BYTES = 49000;
+const EVAL_RESPONSE_MAX_CHARS = 3000;
+
+function buildEvalPayload(requestId, sessionId, userId, workflowId, messages, assistantResponse) {
+  const responseText = assistantResponse.slice(0, EVAL_RESPONSE_MAX_CHARS);
+  let trimmedMessages = messages;
+  while (trimmedMessages.length > 1) {
+    const json = JSON.stringify({
+      request_id:         requestId,
+      session_id:         sessionId,
+      user_id:            userId,
+      workflow_id:        workflowId,
+      messages:           trimmedMessages,
+      assistant_response: responseText,
+    });
+    if (Buffer.byteLength(json, 'utf8') <= QUEUE_MAX_RAW_BYTES) {
+      return Buffer.from(json).toString('base64');
+    }
+    trimmedMessages = trimmedMessages.slice(Math.ceil(trimmedMessages.length / 2));
+  }
+  return Buffer.from(JSON.stringify({
+    request_id:         requestId,
+    session_id:         sessionId,
+    user_id:            userId,
+    workflow_id:        workflowId,
+    messages:           trimmedMessages,
+    assistant_response: responseText,
+  })).toString('base64');
+}
+
+// Fire-and-forget: enqueue an evaluation job without blocking the SSE response.
+function enqueueEval(requestId, sessionId, userId, workflowId, messages, assistantResponse) {
+  Promise.resolve().then(async () => {
+    try {
+      const encoded = buildEvalPayload(requestId, sessionId, userId, workflowId, messages, assistantResponse);
+      await queueClient().sendMessage(encoded);
+    } catch (err) {
+      console.error('Eval enqueue error:', err.message);
+      track('EvalEnqueueError', { requestId, sessionId, errorType: err.constructor?.name ?? 'Error' });
+    }
+  });
+}
+
 // ── Health check — AGW and Container Apps liveness probe ──────────────────────
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -201,13 +333,20 @@ app.post('/api/chat', authenticate, async (req, res) => {
 
   // workflowId is validated against the server-side workflow map.
   // Unknown or missing ids fall back to the default workflow.
-  const { messages, workflowId } = req.body;
+  const { messages, workflowId, sessionId: rawSessionId } = req.body;
   const workflow = (workflowId && workflows.has(workflowId))
     ? workflows.get(workflowId)
     : defaultWorkflow;
 
   const requestId = crypto.randomUUID();
   const startTime = Date.now();
+
+  // Accept a client-provided sessionId for multi-turn session tracking.
+  // Must be a valid UUID v4; any non-conforming value is silently replaced.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const sessionId = (typeof rawSessionId === 'string' && UUID_RE.test(rawSessionId))
+    ? rawSessionId
+    : requestId;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages array is required' });
@@ -228,6 +367,7 @@ app.post('/api/chat', authenticate, async (req, res) => {
 
   track('ChatRequest', {
     requestId,
+    sessionId,
     userId:       req.user?.oid  ?? 'anonymous',
     userName:     req.user?.name ?? 'anonymous',
     workflowId:   workflow.id,
@@ -237,6 +377,13 @@ app.post('/api/chat', authenticate, async (req, res) => {
     }),
   });
 
+  // RAG retrieval runs before we start streaming so errors return a proper HTTP status.
+  const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content ?? '';
+  let retrievedContext = '';
+  if (workflow.retrieval_enabled && lastUserMessage) {
+    retrievedContext = await retrieveContext(lastUserMessage, RETRIEVAL_TOP_K);
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -245,7 +392,10 @@ app.post('/api/chat', authenticate, async (req, res) => {
 
   try {
     const { system_prompt, parameters = {} } = workflow;
-    const requestMessages = [{ role: 'system', content: system_prompt }, ...messages];
+    const systemContent = retrievedContext
+      ? `${system_prompt}\n\n${retrievedContext}`
+      : system_prompt;
+    const requestMessages = [{ role: 'system', content: systemContent }, ...messages];
     const openAiStartMs   = Date.now();
 
     if (LOG_OPENAI_IO) {
@@ -271,12 +421,13 @@ app.post('/api/chat', authenticate, async (req, res) => {
     });
 
     let responseText = '';
+    const captureResponse = LOG_OPENAI_IO || EVAL_QUEUE_ENABLED;
     for await (const chunk of stream) {
       // The final chunk (with include_usage) carries usage only — no content delta
       if (chunk.usage) { usage = chunk.usage; continue; }
       const delta = chunk.choices[0]?.delta?.content;
       if (delta) {
-        if (LOG_OPENAI_IO) responseText += delta;
+        if (captureResponse) responseText += delta;
         res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
       }
     }
@@ -297,6 +448,7 @@ app.post('/api/chat', authenticate, async (req, res) => {
 
     track('ChatComplete', {
       requestId,
+      sessionId,
       userId:           req.user?.oid ?? 'anonymous',
       workflowId:       workflow.id,
       durationMs:       Date.now() - startTime,
@@ -304,6 +456,17 @@ app.post('/api/chat', authenticate, async (req, res) => {
       completionTokens: usage?.completion_tokens ?? -1,
       totalTokens:      usage?.total_tokens      ?? -1,
     });
+
+    if (EVAL_QUEUE_ENABLED && responseText) {
+      enqueueEval(
+        requestId,
+        sessionId,
+        req.user?.oid ?? 'anonymous',
+        workflow.id,
+        messages,
+        responseText,
+      );
+    }
   } catch (err) {
     // Log full error server-side; send only a generic message to the client
     console.error('OpenAI error:', err.message);

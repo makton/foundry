@@ -9,6 +9,7 @@ export default function App({ apiScope }) {
   const [error, setError]             = useState(null);
   const [workflows, setWorkflows]     = useState([]);
   const [workflowId, setWorkflowId]   = useState('default');
+  const [sessionId, setSessionId]     = useState(() => crypto.randomUUID());
 
   const { instance, accounts } = useMsal();
   const isAuthenticated = accounts.length > 0;
@@ -36,8 +37,8 @@ export default function App({ apiScope }) {
       });
       return accessToken;
     } catch {
-      await instance.acquireTokenPopup({ scopes: [apiScope], account: accounts[0] });
-      return null;
+      const { accessToken } = await instance.acquireTokenPopup({ scopes: [apiScope], account: accounts[0] });
+      return accessToken;
     }
   }, [instance, accounts, apiScope, isAuthenticated]);
 
@@ -97,7 +98,7 @@ export default function App({ apiScope }) {
           'Content-Type': 'application/json',
           ...(token && { Authorization: `Bearer ${token}` }),
         },
-        body: JSON.stringify({ messages: history, workflowId }),
+        body: JSON.stringify({ messages: history, workflowId, sessionId }),
       });
 
       if (!response.ok) {
@@ -148,12 +149,14 @@ export default function App({ apiScope }) {
   const clearChat = useCallback(() => {
     setMessages([]);
     setError(null);
+    setSessionId(crypto.randomUUID());
   }, []);
 
   const handleWorkflowChange = useCallback((id) => {
     setWorkflowId(id);
     setMessages([]);
     setError(null);
+    setSessionId(crypto.randomUUID());
   }, []);
 
   return (

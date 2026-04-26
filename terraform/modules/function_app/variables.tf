@@ -173,6 +173,30 @@ variable "application_insights_connection_string" {
   sensitive = true
 }
 
+variable "foundry_agent_endpoint" {
+  description = "Full HTTPS URL of the Foundry Hosted Agent invocations endpoint (set after az foundry agent deploy)"
+  type        = string
+  default     = ""
+}
+
+variable "eval_jobs_queue_name" {
+  description = "Name of the Storage Queue that chatbot-api enqueues evaluation jobs to"
+  type        = string
+  default     = "eval-jobs"
+}
+
+variable "eval_queue_storage_account_name" {
+  description = "Name of the storage account containing the eval-jobs queue (the main storage account)"
+  type        = string
+  default     = ""
+}
+
+variable "cosmosdb_eval_container" {
+  description = "Name of the CosmosDB container for chat evaluation records"
+  type        = string
+  default     = "chat-evaluations"
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

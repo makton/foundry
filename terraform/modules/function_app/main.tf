@@ -138,6 +138,17 @@ resource "azurerm_linux_function_app" "main" {
     # ── Key Vault ──
     AZURE_KEY_VAULT_URI = var.key_vault_uri
 
+    # ── Eval queue (Foundry Hosted Agent integration) ──
+    # Identity-based queue connection — no connection string stored.
+    # __accountName + __clientId tells the Functions host to use the user-assigned
+    # managed identity (not system-assigned) when polling the eval-jobs queue.
+    # See: https://learn.microsoft.com/azure/azure-functions/functions-bindings-storage-queue#identity-based-connections
+    "EvalQueueConnection__accountName" = var.eval_queue_storage_account_name
+    "EvalQueueConnection__clientId"    = azurerm_user_assigned_identity.function_app.client_id
+    EVAL_JOBS_QUEUE_NAME               = var.eval_jobs_queue_name
+    FOUNDRY_AGENT_ENDPOINT             = var.foundry_agent_endpoint
+    COSMOSDB_EVAL_CONTAINER            = var.cosmosdb_eval_container
+
     # ── Monitoring ──
     APPLICATIONINSIGHTS_CONNECTION_STRING = var.application_insights_connection_string
     ApplicationInsightsAgent_EXTENSION_VERSION = "~3"
@@ -197,6 +208,14 @@ resource "azurerm_private_endpoint" "function_app" {
 resource "azurerm_role_assignment" "source_storage_reader" {
   scope                = var.source_storage_account_id
   role_definition_name = "Storage Blob Data Reader"
+  principal_id         = azurerm_user_assigned_identity.function_app.principal_id
+}
+
+# Dequeue evaluation jobs from the eval-jobs queue on the main storage account.
+# Message Processor = read + delete messages (minimum needed for QueueTrigger).
+resource "azurerm_role_assignment" "eval_queue_processor" {
+  scope                = var.source_storage_account_id
+  role_definition_name = "Storage Queue Data Message Processor"
   principal_id         = azurerm_user_assigned_identity.function_app.principal_id
 }
 

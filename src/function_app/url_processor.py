@@ -131,14 +131,23 @@ class URLProcessor:
 
         await urls.delete_item(item=url_id, partition_key=url_id)
 
-        # Remove derived documents and chunks keyed by url_id
-        for cname in (self._docs_container, self._chunks_container):
-            c = db.get_container_client(cname)
-            async for row in c.query_items(
-                query="SELECT c.id FROM c WHERE c.url_id = @uid",
-                parameters=[{"name": "@uid", "value": url_id}],
-            ):
-                await c.delete_item(item=row["id"], partition_key=url_id)
+        # Remove derived documents and chunks keyed by url_id.
+        # Each container uses a different partition key path:
+        #   source-documents → /source  (URL string)
+        #   document-chunks  → /document_id (url_id)
+        docs_c = db.get_container_client(self._docs_container)
+        async for row in docs_c.query_items(
+            query="SELECT c.id, c.source FROM c WHERE c.url_id = @uid",
+            parameters=[{"name": "@uid", "value": url_id}],
+        ):
+            await docs_c.delete_item(item=row["id"], partition_key=row["source"])
+
+        chunks_c = db.get_container_client(self._chunks_container)
+        async for row in chunks_c.query_items(
+            query="SELECT c.id FROM c WHERE c.url_id = @uid",
+            parameters=[{"name": "@uid", "value": url_id}],
+        ):
+            await chunks_c.delete_item(item=row["id"], partition_key=url_id)
 
         # Remove status records
         sc = db.get_container_client(self._status_container)
@@ -150,10 +159,9 @@ class URLProcessor:
 
         # Remove from AI Search
         if self._search_client:
-            async with self._search_client:
-                docs = [{"id": chunk_id} async for chunk_id in self._search_chunks_for_url(url_id)]
-                if docs:
-                    await self._search_client.delete_documents(documents=docs)
+            docs = [{"id": chunk_id} async for chunk_id in self._search_chunks_for_url(url_id)]
+            if docs:
+                await self._search_client.delete_documents(documents=docs)
 
         logger.info("Deleted url_id=%s url=%s", url_id, url)
 
@@ -243,8 +251,7 @@ class URLProcessor:
             })
 
         if self._search_client and search_docs:
-            async with self._search_client:
-                await self._search_client.upload_documents(documents=search_docs)
+            await self._search_client.upload_documents(documents=search_docs)
 
         # Write processing status
         status_c = db.get_container_client(self._status_container)
@@ -270,15 +277,14 @@ class URLProcessor:
         return results
 
     async def _search_chunks_for_url(self, url_id: str):
-        async with self._search_client:
-            results = await self._search_client.search(
-                search_text="*",
-                filter=f"url_id eq '{url_id}'",
-                select=["id"],
-                top=10_000,
-            )
-            async for r in results:
-                yield r["id"]
+        results = await self._search_client.search(
+            search_text="*",
+            filter=f"url_id eq '{url_id}'",
+            select=["id"],
+            top=10_000,
+        )
+        async for r in results:
+            yield r["id"]
 
     async def _ensure_index(self) -> None:
         index = SearchIndex(
@@ -318,8 +324,7 @@ class URLProcessor:
             ),
         )
         try:
-            async with self._search_index_client:
-                await self._search_index_client.create_or_update_index(index)
+            await self._search_index_client.create_or_update_index(index)
         except Exception:
             logger.exception("Failed to create/update search index")
 

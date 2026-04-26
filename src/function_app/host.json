@@ -12,5 +12,14 @@
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[4.*, 5.0.0)"
   },
-  "functionTimeout": "00:10:00"
+  "functionTimeout": "00:10:00",
+  "extensions": {
+    "queues": {
+      "maxPollingInterval": "00:00:10",
+      "visibilityTimeout": "00:01:00",
+      "batchSize": 4,
+      "maxDequeueCount": 3,
+      "newBatchThreshold": 2
+    }
+  }
 }

@@ -3,10 +3,13 @@ import logging
 
 import azure.functions as func
 
+from eval_trigger import bp as eval_bp
 from url_processor import URLProcessor
 
 logger = logging.getLogger(__name__)
 app = func.FunctionApp()
+app.register_functions(eval_bp)   # eval-jobs QueueTrigger
+
 _processor = URLProcessor()
 
 

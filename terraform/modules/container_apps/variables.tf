@@ -65,6 +65,18 @@ variable "storage_account_id" {
   type        = string
 }
 
+variable "storage_account_name" {
+  description = "Storage account name — injected into apps that need to enqueue eval jobs"
+  type        = string
+  default     = ""
+}
+
+variable "eval_jobs_queue_name" {
+  description = "Name of the Storage Queue for eval jobs — injected into apps that declare needs_eval_queue"
+  type        = string
+  default     = "eval-jobs"
+}
+
 variable "cosmosdb_endpoint" {
   description = "CosmosDB account endpoint URL (injected into apps that declare needs_cosmosdb_read)"
   type        = string
@@ -140,6 +152,9 @@ variable "api_apps" {
     needs_key_vault     = optional(bool, false)
     needs_storage_read  = optional(bool, false)
     needs_cosmosdb_read = optional(bool, false)
+    # When true: grants Storage Queue Data Message Sender and injects STORAGE_ACCOUNT_NAME
+    # + EVAL_JOBS_QUEUE_NAME env vars so the app can enqueue evaluation jobs.
+    needs_eval_queue    = optional(bool, false)
     # Auth flag — injects Entra ID config for JWT validation (api) or MSAL (ui)
     needs_auth          = optional(bool, false)
   }))

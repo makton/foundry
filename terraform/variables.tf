@@ -594,3 +594,23 @@ variable "budget_alert_emails" {
   type        = list(string)
   default     = []
 }
+
+# ── Foundry Hosted Agent — Chat Accuracy Evaluator ────────────────────────────
+
+variable "eval_jobs_queue_name" {
+  description = "Name of the Storage Queue that chatbot-api uses to enqueue evaluation jobs"
+  type        = string
+  default     = "eval-jobs"
+}
+
+variable "foundry_agent_endpoint" {
+  description = "HTTPS endpoint of the Foundry Hosted Agent invocations API (set after az foundry agent deploy)"
+  type        = string
+  default     = ""
+}
+
+variable "cosmosdb_eval_container" {
+  description = "CosmosDB container name for chat evaluation records"
+  type        = string
+  default     = "chat-evaluations"
+}

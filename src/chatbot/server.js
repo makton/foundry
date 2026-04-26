@@ -66,7 +66,7 @@ app.get('/health', (_req, res) => {
 
 // ── Chat completions with SSE streaming ───────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
-  const { messages, systemPrompt } = req.body;
+  const { messages } = req.body;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages array is required' });
@@ -97,7 +97,7 @@ app.post('/api/chat', async (req, res) => {
   res.flushHeaders();
 
   try {
-    const requestMessages = [{ role: 'system', content: systemPrompt || SYSTEM_PROMPT }, ...messages];
+    const requestMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
     const openAiStartMs   = Date.now();
 
     if (LOG_OPENAI_IO) {

@@ -1,11 +1,12 @@
 locals {
   # Pre-filtered maps used by conditional role assignments — keeps for_each expressions readable
-  apps_needing_openai    = { for k, v in var.api_apps : k => v if v.needs_openai }
-  apps_needing_ai_search = var.ai_search_id != null ? { for k, v in var.api_apps : k => v if v.needs_ai_search } : {}
-  apps_needing_key_vault = { for k, v in var.api_apps : k => v if v.needs_key_vault }
-  apps_needing_storage   = { for k, v in var.api_apps : k => v if v.needs_storage_read }
+  apps_needing_openai      = { for k, v in var.api_apps : k => v if v.needs_openai }
+  apps_needing_ai_search   = var.ai_search_id != null ? { for k, v in var.api_apps : k => v if v.needs_ai_search } : {}
+  apps_needing_key_vault   = { for k, v in var.api_apps : k => v if v.needs_key_vault }
+  apps_needing_storage     = { for k, v in var.api_apps : k => v if v.needs_storage_read }
+  apps_needing_eval_queue  = { for k, v in var.api_apps : k => v if v.needs_eval_queue }
   # ACR pull is always required when a custom registry is used — every app must pull its image
-  apps_needing_acr_pull  = var.container_registry_id != null ? var.api_apps : {}
+  apps_needing_acr_pull    = var.container_registry_id != null ? var.api_apps : {}
 }
 
 # ── Managed Identity — one per Container App ──────────────────────────────────
@@ -158,6 +159,28 @@ resource "azurerm_container_app" "api" {
         }
       }
 
+      dynamic "env" {
+        for_each = each.value.needs_eval_queue && var.storage_account_name != "" ? [1] : []
+        content {
+          name  = "STORAGE_ACCOUNT_NAME"
+          value = var.storage_account_name
+        }
+      }
+      dynamic "env" {
+        for_each = each.value.needs_eval_queue ? [1] : []
+        content {
+          name  = "EVAL_QUEUE_ENABLED"
+          value = "true"
+        }
+      }
+      dynamic "env" {
+        for_each = each.value.needs_eval_queue ? [1] : []
+        content {
+          name  = "EVAL_JOBS_QUEUE_NAME"
+          value = var.eval_jobs_queue_name
+        }
+      }
+
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = var.application_insights_connection_string
@@ -229,6 +252,7 @@ resource "azurerm_container_app" "api" {
     azurerm_role_assignment.search_index_reader,
     azurerm_role_assignment.kv_secrets_user,
     azurerm_role_assignment.storage_blob_reader,
+    azurerm_role_assignment.queue_sender,
     azurerm_role_assignment.acr_pull,
   ]
 }
@@ -265,6 +289,14 @@ resource "azurerm_role_assignment" "storage_blob_reader" {
 
   scope                = var.storage_account_id
   role_definition_name = "Storage Blob Data Reader"
+  principal_id         = azurerm_user_assigned_identity.api_apps[each.key].principal_id
+}
+
+resource "azurerm_role_assignment" "queue_sender" {
+  for_each = local.apps_needing_eval_queue
+
+  scope                = var.storage_account_id
+  role_definition_name = "Storage Queue Data Message Sender"
   principal_id         = azurerm_user_assigned_identity.api_apps[each.key].principal_id
 }
 

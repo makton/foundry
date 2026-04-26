@@ -250,6 +250,9 @@ module "container_apps" {
   azure_ui_client_id  = module.auth.ui_client_id
   azure_api_scope     = module.auth.api_scope
 
+  storage_account_name = module.storage.storage_account_name
+  eval_jobs_queue_name = var.eval_jobs_queue_name
+
   api_apps = local.resolved_api_apps
 
   tags = local.common_tags
@@ -317,6 +320,15 @@ module "app_gateway" {
 # exists. CosmosDB data plane roles are assigned by passing the Function App's
 # principal ID into the cosmosdb module's data_contributor_principal_ids.
 
+# ── Eval-jobs Storage Queue ───────────────────────────────────────────────────
+# chatbot-api enqueues evaluation payloads here after every completed chat.
+# The Function App reads these via QueueTrigger (private endpoint, no public access).
+
+resource "azurerm_storage_queue" "eval_jobs" {
+  name                 = var.eval_jobs_queue_name
+  storage_account_name = module.storage.storage_account_name
+}
+
 module "function_app" {
   source = "./modules/function_app"
 
@@ -357,6 +369,11 @@ module "function_app" {
   key_vault_uri = module.security.key_vault_uri
 
   openai_id = module.ai_services.openai_id
+
+  eval_queue_storage_account_name = module.storage.storage_account_name
+  eval_jobs_queue_name            = var.eval_jobs_queue_name
+  foundry_agent_endpoint          = var.foundry_agent_endpoint
+  cosmosdb_eval_container         = var.cosmosdb_eval_container
 
   log_analytics_id                       = module.monitoring.log_analytics_workspace_id
   application_insights_connection_string = module.monitoring.application_insights_connection_string

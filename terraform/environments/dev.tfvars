@@ -108,6 +108,10 @@ cosmosdb_containers = {
     partition_key_path  = "/id"
     default_ttl_seconds = -1       # URLs persist indefinitely
   }
+  "chat-evaluations" = {
+    partition_key_path  = "/session_id"
+    default_ttl_seconds = 7776000  # 90 days
+  }
 }
 
 # ── Function App ──────────────────────────────────────────────────────────────
@@ -200,14 +204,17 @@ api_apps = {
     memory                    = "1Gi"
     scale_concurrent_requests = 10
     custom_env_vars = {
-      AZURE_OPENAI_CHAT_DEPLOYMENT = "gpt-4o"
-      CHATBOT_SYSTEM_PROMPT        = "You are a helpful AI assistant for the Azure AI Foundry platform. Be concise and accurate."
+      AZURE_OPENAI_CHAT_DEPLOYMENT      = "gpt-4o"
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT = "text-embedding-3-large"
+      AZURE_AI_SEARCH_INDEX_NAME        = "foundry-chunks"
+      CHATBOT_SYSTEM_PROMPT             = "You are a helpful AI assistant for the Azure AI Foundry platform. Be concise and accurate."
     }
     needs_openai        = true
     needs_ai_search     = true
     needs_key_vault     = true
     needs_storage_read  = false
     needs_cosmosdb_read = true
+    needs_eval_queue    = true
     needs_auth          = true
   }
 }
@@ -230,6 +237,12 @@ enable_budget_alert = true
 budget_amount       = 200                        # $200/month — covers dev AI workloads
 budget_start_date   = "2026-01-01T00:00:00Z"    # First day of the current year
 budget_alert_emails = ["platform-team@contoso.com"]
+
+# ── Foundry Hosted Agent — Chat Accuracy Evaluator ────────────────────────────
+# Set foundry_agent_endpoint after running scripts/deploy-foundry-agent.sh
+# foundry_agent_endpoint = "https://<project>.services.ai.azure.com/api/projects/<id>/agents/accuracy-evaluator/endpoint/protocols/invocations"
+eval_jobs_queue_name    = "eval-jobs"
+cosmosdb_eval_container = "chat-evaluations"
 
 # ── Tags ──────────────────────────────────────────────────────────────────────
 tags = {
