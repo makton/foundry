@@ -1,11 +1,12 @@
 # Foundry Platform — Architecture
 
-Four diagrams cover the platform:
+Five diagrams cover the platform:
 
 1. [Infrastructure Overview](#1-infrastructure-overview) — all Azure resources and network topology
-2. [Chatbot Request Flow](#2-chatbot-request-and-authentication-flow) — browser → AGW → nginx → API → OpenAI, with JWT auth
+2. [Chatbot Request Flow](#2-chatbot-request-and-authentication-flow) — browser → AGW → nginx → API → AI Search → OpenAI, with JWT auth, RAG retrieval, and session tracking
 3. [Document Ingestion Flow](#3-document-ingestion-flow) — blob upload → Function App → AI Search + CosmosDB
 4. [CI/CD Pipeline Flow](#4-cicd-pipeline-flow) — Terraform and container deployment pipelines
+5. [Chat Evaluation Flow](#5-chat-evaluation-flow) — async accuracy scoring: Storage Queue → Function App → Foundry Hosted Agent → CosmosDB
 
 ---
 
@@ -37,7 +38,7 @@ graph TD
         end
 
         subgraph AGENTS_SUBNET["snet-agents  10.x.2.0/27"]
-            AGENTS["AI Foundry\nAgent Service"]
+            AGENTS["AI Foundry Hosted Agent\naccuracy-evaluator\n(containerised, MS-managed)"]
         end
 
         subgraph PE_SUBNET["snet-private-endpoints  10.x.1.0/24"]
@@ -56,9 +57,9 @@ graph TD
     subgraph PAAS["Azure PaaS — private-endpoint accessible"]
         OAI["Azure OpenAI\ngpt-4o · gpt-4o-mini\ntext-embedding-3-large\no1 (prod only)"]
         SRCH["AI Search\nbasic (dev) · standard (prod)\nIndex: foundry-chunks"]
-        COSMOS["CosmosDB\nServerless (dev)\nProvisioned 10k RU/s (prod)\nContinuous backup (prod)"]
+        COSMOS["CosmosDB\nServerless (dev)\nProvisioned 10k RU/s (prod)\nContinuous backup (prod)\ncontainers: source-documents\ndocument-chunks · processing-status\nsource-urls · chat-evaluations"]
         KV["Key Vault\nstandard (dev)\npremium + CMK (prod)\nPurge protection enabled"]
-        ST["Storage Account\nSource documents\nLRS (dev) · ZRS (prod)"]
+        ST["Storage Account\nSource documents\nLRS (dev) · ZRS (prod)\nQueues: eval-jobs"]
         ACR["Container Registry\nStandard (dev)\nPremium (prod)"]
     end
 
@@ -94,11 +95,13 @@ graph TD
     CAPI        --> PE_SRCH  --> SRCH
     CAPI        --> PE_COSMOS --> COSMOS
     CAPI        --> PE_KV    --> KV
+    CAPI        -->|fire-and-forget\neval-jobs queue| PE_ST --> ST
 
     FUNC        -->|service endpoint| ST
     FUNC        --> PE_OAI
     FUNC        --> PE_SRCH
     FUNC        --> PE_COSMOS
+    FUNC        -->|HTTPS — AzureCloud\nPOST /invocations| AGENTS
 
     AGENTS      --> PE_OAI
     AGENTS      --> PE_SRCH
@@ -157,6 +160,8 @@ sequenceDiagram
     box Entra ID / Azure
         participant JWKS as Entra ID JWKS
         participant OAI as Azure OpenAI
+        participant SRCH as AI Search\n(foundry-chunks)
+        participant QUEUE as Storage Queue\n(eval-jobs)
     end
 
     %% ── First visit: silent token attempt ──────────────────────────────────────
@@ -170,12 +175,13 @@ sequenceDiagram
     SPA->>JWKS: loginPopup({ scopes: ["api://.../Chat.Read"] })
     JWKS-->>SPA: JWT access token (RS256, aud=API clientId, scp=Chat.Read)
     SPA-->>User: Render chat UI (user name shown in header)
+    SPA->>SPA: Generate sessionId = crypto.randomUUID()\n(stable per conversation, reset on New Chat or workflow switch)
 
     %% ── Chat request ────────────────────────────────────────────────────────────
-    Note over User,OAI: Authenticated chat request
+    Note over User,QUEUE: Authenticated chat request
     User->>SPA: Type message, press Send
     SPA->>SPA: acquireTokenSilent (token from sessionStorage)
-    SPA->>AGW: POST /api/chat\nAuthorization: Bearer <jwt>\nContent-Type: application/json
+    SPA->>AGW: POST /api/chat\nAuthorization: Bearer <jwt>\n{ messages, workflowId, sessionId }
 
     Note over AGW: WAF checks:\n① BlockApiFromInternet (prod)\n② OWASP 3.2 + BotManager\n③ Rate limit /api/chat — 30 rpm/IP (prod)
     AGW->>Nginx: Forward to chatbot-ui backend pool\n(HTTPS, pick_host_name_from_backend)
@@ -191,9 +197,20 @@ sequenceDiagram
     JWKS-->>API: RSA public key
     API->>API: jwt.verify(token, key,\n{ aud: API_CLIENT_ID,\n  iss: login.microsoft.../v2.0,\n  alg: RS256 })\nCheck scp contains "Chat.Read"
 
-    API->>API: checkRateLimit(socket.remoteAddress)\n20 rpm in-process guard
+    API->>API: checkRateLimit(socket.remoteAddress)\n20 rpm in-process guard\nLoad workflow JSON (retrieval_enabled flag)
 
-    API->>OAI: chat.completions.create(stream: true)\nManaged identity token\n(DefaultAzureCredential → IMDS)
+    %% ── RAG retrieval (document-qa only) ───────────────────────────────────────
+    Note over API,SRCH: RAG retrieval — document-qa workflow only
+    opt workflow.retrieval_enabled == true
+        API->>OAI: embeddings.create(input=lastUserMessage,\nmodel=text-embedding-3-large, dimensions=1536)
+        OAI-->>API: float[1536] query vector
+        API->>SRCH: search(query, vectorSearchOptions, queryType=semantic)\ntop-5 chunks from foundry-chunks index
+        SRCH-->>API: chunks[] { content, source }
+        API->>API: Build retrievedContext string\n"## Retrieved Context\n[Source: …]\n…"
+        API->>API: Prepend retrievedContext to system prompt
+    end
+
+    API->>OAI: chat.completions.create(stream: true)\n[system: prompt + context, ...messages]\nManaged identity (DefaultAzureCredential → IMDS)
 
     Note over API,SPA: SSE streaming response
     loop Each token chunk
@@ -207,6 +224,10 @@ sequenceDiagram
     OAI-->>API: [stream done]
     API-->>SPA: data: [DONE]\n\n
     SPA-->>User: Message complete
+
+    %% ── Fire-and-forget eval enqueue ────────────────────────────────────────────
+    Note over API,QUEUE: Async eval — fire-and-forget (never delays SSE)
+    API-)QUEUE: sendMessage(base64({\n  request_id, session_id, user_id,\n  workflow_id, messages[],\n  assistant_response,\n  retrieved_context (≤20 000 chars)\n}))
 ```
 
 ---
@@ -317,6 +338,62 @@ graph LR
     class TF_APPLY_P,CB_PROD approval
     class PR,PUSH trigger
 ```
+
+---
+
+## 5. Chat Evaluation Flow
+
+Fires asynchronously after every `/api/chat` response. The chatbot-api enqueues a payload and returns immediately; all downstream work is non-blocking.
+
+```mermaid
+sequenceDiagram
+    box VNet — Container Apps
+        participant API as chatbot-api (Express)
+    end
+    box PaaS (via private endpoint)
+        participant QUEUE as Storage Queue\n(eval-jobs)
+        participant COSMOS as CosmosDB\n(chat-evaluations)
+    end
+    box snet-function-app
+        participant FUNC as eval_trigger.py\n(QueueTrigger, Python 3.11)
+    end
+    box AI Foundry Hosted Agent (MS-managed)
+        participant AGENT as accuracy-evaluator\n(FastAPI / uvicorn)
+        participant OAI as Azure OpenAI\n(gpt-4o via Hub connection)
+    end
+
+    API-)QUEUE: sendMessage(base64 JSON)\n{ request_id, session_id, user_id,\n  workflow_id, messages[],\n  assistant_response,\n  retrieved_context }
+
+    Note over QUEUE,FUNC: Queue trigger fires within ~30 s
+    QUEUE-->>FUNC: Dequeue message
+
+    FUNC->>FUNC: base64-decode + JSON parse\nBuild invocation payload
+
+    FUNC->>AGENT: POST /invocations\n{ session_id, request_id, user_id,\n  workflow_id, messages[],\n  assistant_response,\n  retrieved_context }\nAuth: Bearer (ManagedIdentity → ml.azure.com)
+
+    Note over AGENT: Pydantic validation\n(field lengths, message count, role values)
+
+    AGENT->>OAI: chat.completions.create(\n  model=gpt-4o, temperature=0,\n  system=rubric (workflow-aware),\n  user=eval_prompt )\nAuth: ManagedIdentity → Hub connection
+
+    Note over AGENT: Rubric branch:\n• retrieved_context present → groundedness vs. RAG chunks\n• absent → groundedness vs. conversation history
+
+    OAI-->>AGENT: JSON { groundedness, relevance, coherence, reasoning }
+    AGENT->>AGENT: Clamp scores 0.0–1.0\noverall = g×0.3 + r×0.4 + c×0.3
+    AGENT-->>FUNC: { request_id, session_id, evaluation: { groundedness,\n  relevance, coherence, overall, reasoning } }
+
+    FUNC->>COSMOS: upsert document\n{ id: request_id, session_id, user_id,\n  workflow_id, messages[], assistant_response,\n  groundedness, relevance, coherence, overall,\n  reasoning, evaluated_at }\npartition key: /session_id · TTL: 90 days
+```
+
+**Identity & RBAC for the eval pipeline**
+
+| Identity | Role | Scope |
+|---|---|---|
+| chatbot-api managed identity | Storage Queue Data Message Sender | Storage account |
+| eval_trigger Function App identity | Storage Queue Data Message Receiver | Storage account |
+| eval_trigger Function App identity | Cosmos DB Built-in Data Contributor | CosmosDB account |
+| Foundry Hosted Agent managed identity | Cognitive Services OpenAI User | OpenAI (via Hub workspace connection, AAD auth) |
+
+**Networking note:** Azure AI Foundry Hosted Agents do not support VNet/private-network integration in the current preview. The agent's HTTP endpoint is on public Microsoft-managed infrastructure. The Function App reaches it over the `AzureCloud` service tag (port 443), which the `snet-function-app` NSG outbound rule permits.
 
 ---
 
