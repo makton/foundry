@@ -1,5 +1,19 @@
 'use strict';
 
+// Must be initialised before any other require so auto-instrumentation
+// patches the http module before express and the OpenAI SDK are loaded.
+const appInsights = require('applicationinsights');
+if (process.env.APPLICATIONINSIGHTS_CONNECTION_STRING) {
+  appInsights
+    .setup()                          // reads conn string from env automatically
+    .setAutoCollectRequests(true)
+    .setAutoCollectExceptions(true)
+    .setAutoCollectPerformance(false)
+    .setAutoCollectDependencies(true)
+    .setUseDiskRetryCaching(false)
+    .start();
+}
+
 const fs      = require('fs');
 const path    = require('path');
 const express = require('express');
@@ -14,6 +28,31 @@ app.use(express.json({ limit: '256kb' }));
 const ENDPOINT   = process.env.AZURE_OPENAI_ENDPOINT;
 const DEPLOYMENT = process.env.AZURE_OPENAI_CHAT_DEPLOYMENT || 'gpt-4o';
 const API_VER    = process.env.AZURE_OPENAI_API_VERSION    || '2024-10-21';
+
+// When true, the last user message text is included in telemetry.
+// Disabled by default — enable only after verifying data-residency and
+// privacy/consent requirements for your deployment.
+const LOG_MESSAGE_CONTENT = process.env.LOG_MESSAGE_CONTENT === 'true';
+
+// When true, the full OpenAI request payload (system prompt + all messages) and
+// the assembled response text are written to telemetry as OpenAIRequest /
+// OpenAIResponse events. Implies full content logging — enable with care.
+const LOG_OPENAI_IO = process.env.LOG_OPENAI_IO === 'true';
+
+// ── Telemetry ─────────────────────────────────────────────────────────────────
+// Fire-and-forget custom events written to Application Insights → Log Analytics.
+// All property values are coerced to strings so KQL tostring() is not needed.
+// Schema: customEvents | where name startswith "Chat"
+function track(name, props) {
+  const c = appInsights.defaultClient;
+  if (!c) return;
+  try {
+    c.trackEvent({
+      name,
+      properties: Object.fromEntries(Object.entries(props).map(([k, v]) => [k, String(v ?? '')])),
+    });
+  } catch { /* non-critical — never block the request path */ }
+}
 
 // ── Workflow definitions ───────────────────────────────────────────────────────
 // Loaded once at startup from ./workflows/*.json.
@@ -167,6 +206,9 @@ app.post('/api/chat', authenticate, async (req, res) => {
     ? workflows.get(workflowId)
     : defaultWorkflow;
 
+  const requestId = crypto.randomUUID();
+  const startTime = Date.now();
+
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages array is required' });
   }
@@ -184,6 +226,17 @@ app.post('/api/chat', authenticate, async (req, res) => {
     return res.status(400).json({ error: 'invalid message format' });
   }
 
+  track('ChatRequest', {
+    requestId,
+    userId:       req.user?.oid  ?? 'anonymous',
+    userName:     req.user?.name ?? 'anonymous',
+    workflowId:   workflow.id,
+    messageCount: messages.length,
+    ...(LOG_MESSAGE_CONTENT && {
+      lastUserMessage: (messages.filter(m => m.role === 'user').pop()?.content ?? '').slice(0, 500),
+    }),
+  });
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -192,24 +245,75 @@ app.post('/api/chat', authenticate, async (req, res) => {
 
   try {
     const { system_prompt, parameters = {} } = workflow;
+    const requestMessages = [{ role: 'system', content: system_prompt }, ...messages];
+    const openAiStartMs   = Date.now();
+
+    if (LOG_OPENAI_IO) {
+      track('OpenAIRequest', {
+        requestId,
+        model:       DEPLOYMENT,
+        workflowId:  workflow.id,
+        maxTokens:   parameters.max_tokens  ?? 2048,
+        temperature: parameters.temperature ?? 0.7,
+        // Full payload truncated to the App Insights property limit (8192 chars)
+        request: JSON.stringify(requestMessages).slice(0, 8000),
+      });
+    }
+
+    let usage = null;
     const stream = await client().chat.completions.create({
-      model:       DEPLOYMENT,
-      messages:    [{ role: 'system', content: system_prompt }, ...messages],
-      stream:      true,
-      max_tokens:  parameters.max_tokens  ?? 2048,
-      temperature: parameters.temperature ?? 0.7,
+      model:          DEPLOYMENT,
+      messages:       requestMessages,
+      stream:         true,
+      stream_options: { include_usage: true },
+      max_tokens:     parameters.max_tokens  ?? 2048,
+      temperature:    parameters.temperature ?? 0.7,
     });
 
+    let responseText = '';
     for await (const chunk of stream) {
+      // The final chunk (with include_usage) carries usage only — no content delta
+      if (chunk.usage) { usage = chunk.usage; continue; }
       const delta = chunk.choices[0]?.delta?.content;
       if (delta) {
+        if (LOG_OPENAI_IO) responseText += delta;
         res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
       }
     }
     res.write('data: [DONE]\n\n');
+
+    if (LOG_OPENAI_IO) {
+      track('OpenAIResponse', {
+        requestId,
+        model:            DEPLOYMENT,
+        workflowId:       workflow.id,
+        openAiDurationMs: Date.now() - openAiStartMs,
+        promptTokens:     usage?.prompt_tokens     ?? -1,
+        completionTokens: usage?.completion_tokens ?? -1,
+        totalTokens:      usage?.total_tokens      ?? -1,
+        response:         responseText.slice(0, 8000),
+      });
+    }
+
+    track('ChatComplete', {
+      requestId,
+      userId:           req.user?.oid ?? 'anonymous',
+      workflowId:       workflow.id,
+      durationMs:       Date.now() - startTime,
+      promptTokens:     usage?.prompt_tokens     ?? -1,
+      completionTokens: usage?.completion_tokens ?? -1,
+      totalTokens:      usage?.total_tokens      ?? -1,
+    });
   } catch (err) {
     // Log full error server-side; send only a generic message to the client
     console.error('OpenAI error:', err.message);
+    track('ChatError', {
+      requestId,
+      userId:     req.user?.oid ?? 'anonymous',
+      workflowId: workflow.id,
+      durationMs: Date.now() - startTime,
+      errorType:  err.constructor?.name ?? 'Error',
+    });
     res.write(`data: ${JSON.stringify({ error: 'An error occurred. Please try again.' })}\n\n`);
   }
 
