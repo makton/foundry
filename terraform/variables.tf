@@ -91,21 +91,14 @@ variable "function_app_subnet_prefix" {
 
 # ── AI Foundry ────────────────────────────────────────────────────────────────
 
-variable "ai_hub_managed_network_isolation" {
-  description = "AI Hub managed network isolation mode (Disabled, AllowInternetOutbound, AllowOnlyApprovedOutbound)"
-  type        = string
-  default     = "AllowOnlyApprovedOutbound"
-  validation {
-    condition     = contains(["Disabled", "AllowInternetOutbound", "AllowOnlyApprovedOutbound"], var.ai_hub_managed_network_isolation)
-    error_message = "isolation_mode must be Disabled, AllowInternetOutbound, or AllowOnlyApprovedOutbound."
-  }
-}
-
 variable "ai_projects" {
-  description = "Map of AI projects to create within the AI Hub"
+  description = "Map of AI projects to create. Each project gets three Entra security groups (admins/developers/readers) with RBAC scoped to that project."
   type = map(object({
-    description  = optional(string, "")
-    display_name = optional(string, "")
+    description       = optional(string, "")
+    display_name      = optional(string, "")
+    admin_members     = optional(list(string), [])
+    developer_members = optional(list(string), [])
+    reader_members    = optional(list(string), [])
   }))
   default = {
     "default" = {
@@ -202,12 +195,6 @@ variable "key_vault_sku" {
   description = "Key Vault SKU (standard or premium)"
   type        = string
   default     = "standard"
-}
-
-variable "enable_customer_managed_keys" {
-  description = "Enable customer-managed encryption keys via Key Vault"
-  type        = bool
-  default     = false
 }
 
 # ── Monitoring ────────────────────────────────────────────────────────────────

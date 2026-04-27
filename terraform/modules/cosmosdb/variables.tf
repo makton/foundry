@@ -138,6 +138,16 @@ variable "log_analytics_id" {
   type = string
 }
 
+variable "cmk_key_versionless_id" {
+  description = "Versionless Key Vault key ID for customer-managed encryption."
+  type        = string
+}
+
+variable "cmk_key_id" {
+  description = "ARM resource ID of the CMK key, used to scope the RBAC grant."
+  type        = string
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

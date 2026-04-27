@@ -17,9 +17,6 @@ agw_subnet_prefix               = "10.1.5.0/24"
 function_app_subnet_prefix      = "10.1.6.0/26"
 
 # ── AI Foundry ────────────────────────────────────────────────────────────────
-# Full isolation: only approved outbound traffic allowed
-ai_hub_managed_network_isolation = "AllowOnlyApprovedOutbound"
-
 ai_projects = {
   "chat" = {
     description  = "Production chat and RAG application"
@@ -87,8 +84,7 @@ storage_account_tier     = "Standard"
 storage_replication_type = "ZRS"
 
 # ── Key Vault ─────────────────────────────────────────────────────────────────
-key_vault_sku                = "premium"
-enable_customer_managed_keys = true
+key_vault_sku = "premium"
 
 # ── Monitoring ────────────────────────────────────────────────────────────────
 log_analytics_retention_days = 90

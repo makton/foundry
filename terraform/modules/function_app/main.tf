@@ -11,6 +11,22 @@ resource "azurerm_user_assigned_identity" "function_app" {
   tags                = var.tags
 }
 
+# ── Backing storage CMK identity ─────────────────────────────────────────────
+# Separate from the function app's own identity — scoped only to Key Vault CMK access.
+
+resource "azurerm_user_assigned_identity" "storage_cmk" {
+  name                = "id-func-st-cmk-${var.name}-${var.instance_number}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
+
+resource "azurerm_role_assignment" "storage_cmk_crypto_user" {
+  scope                = var.cmk_key_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.storage_cmk.principal_id
+}
+
 # ── Function App backing storage ──────────────────────────────────────────────
 # Internal use by the Functions host: distributed locks, trigger checkpoints, deployment packages.
 # Restricted to the function app VNet integration subnet via network rules + service endpoints.
@@ -35,7 +51,20 @@ resource "azurerm_storage_account" "function_app" {
     bypass                     = ["AzureServices"]
   }
 
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.storage_cmk.id]
+  }
+
   tags = var.tags
+}
+
+resource "azurerm_storage_account_customer_managed_key" "function_app" {
+  storage_account_id        = azurerm_storage_account.function_app.id
+  key_vault_key_id          = var.cmk_key_versionless_id
+  user_assigned_identity_id = azurerm_user_assigned_identity.storage_cmk.id
+
+  depends_on = [azurerm_role_assignment.storage_cmk_crypto_user]
 }
 
 # Grant the Function App identity ownership of its own backing storage

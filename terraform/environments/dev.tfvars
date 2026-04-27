@@ -17,16 +17,20 @@ agw_subnet_prefix               = "10.0.5.0/24"
 function_app_subnet_prefix      = "10.0.6.0/26"
 
 # ── AI Foundry ────────────────────────────────────────────────────────────────
-ai_hub_managed_network_isolation = "AllowInternetOutbound"
-
 ai_projects = {
   "chat" = {
-    description  = "Chat and RAG application project"
-    display_name = "Chat Application"
+    description       = "Chat and RAG application project"
+    display_name      = "Chat Application"
+    admin_members     = []  # Entra object IDs for Azure AI Administrator on this project
+    developer_members = []  # Entra object IDs for Azure AI Developer on this project
+    reader_members    = []  # Entra object IDs for Reader on this project
   }
   "eval" = {
-    description  = "Model evaluation and experimentation"
-    display_name = "Evaluation"
+    description       = "Model evaluation and experimentation"
+    display_name      = "Evaluation"
+    admin_members     = []
+    developer_members = []
+    reader_members    = []
   }
 }
 
@@ -73,8 +77,7 @@ storage_account_tier     = "Standard"
 storage_replication_type = "LRS"
 
 # ── Key Vault ─────────────────────────────────────────────────────────────────
-key_vault_sku                = "standard"
-enable_customer_managed_keys = false
+key_vault_sku = "standard"
 
 # ── Monitoring ────────────────────────────────────────────────────────────────
 log_analytics_retention_days = 30

@@ -1,3 +1,52 @@
+# ── Per-resource CMK identities ───────────────────────────────────────────────
+
+resource "azurerm_user_assigned_identity" "openai_cmk" {
+  name                = "id-oai-${var.name}-${var.instance_number}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
+
+resource "azurerm_role_assignment" "openai_cmk_crypto_user" {
+  scope                = var.cmk_key_ids["openai"]
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.openai_cmk.principal_id
+}
+
+resource "azurerm_user_assigned_identity" "search_cmk" {
+  count = var.enable_ai_search ? 1 : 0
+
+  name                = "id-srch-${var.name}-${var.instance_number}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
+
+resource "azurerm_role_assignment" "search_cmk_crypto_user" {
+  count = var.enable_ai_search ? 1 : 0
+
+  scope                = var.cmk_key_ids["search"]
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.search_cmk[0].principal_id
+}
+
+resource "azurerm_user_assigned_identity" "acr_cmk" {
+  count = var.enable_container_registry ? 1 : 0
+
+  name                = "id-acr-${var.name}-${var.instance_number}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
+
+resource "azurerm_role_assignment" "acr_cmk_crypto_user" {
+  count = var.enable_container_registry ? 1 : 0
+
+  scope                = var.cmk_key_ids["acr"]
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.acr_cmk[0].principal_id
+}
+
 # ── Azure OpenAI ──────────────────────────────────────────────────────────────
 
 resource "azurerm_cognitive_account" "openai" {
@@ -10,7 +59,13 @@ resource "azurerm_cognitive_account" "openai" {
   public_network_access_enabled = false
 
   identity {
-    type = "SystemAssigned"
+    type         = "SystemAssigned, UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.openai_cmk.id]
+  }
+
+  customer_managed_key {
+    key_vault_key_id   = var.cmk_key_versionless_ids["openai"]
+    identity_client_id = azurerm_user_assigned_identity.openai_cmk.client_id
   }
 
   network_acls {
@@ -18,6 +73,8 @@ resource "azurerm_cognitive_account" "openai" {
   }
 
   tags = var.tags
+
+  depends_on = [azurerm_role_assignment.openai_cmk_crypto_user]
 }
 
 resource "azurerm_cognitive_deployment" "openai_models" {
@@ -103,10 +160,18 @@ resource "azurerm_search_service" "main" {
   semantic_search_sku             = var.ai_search_sku == "standard" || var.ai_search_sku == "standard2" || var.ai_search_sku == "standard3" ? "standard" : null
 
   identity {
-    type = "SystemAssigned"
+    type         = "SystemAssigned, UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.search_cmk[0].id]
+  }
+
+  customer_managed_key {
+    key_vault_key_id   = var.cmk_key_versionless_ids["search"]
+    identity_client_id = azurerm_user_assigned_identity.search_cmk[0].client_id
   }
 
   tags = var.tags
+
+  depends_on = [azurerm_role_assignment.search_cmk_crypto_user]
 }
 
 resource "azurerm_private_endpoint" "ai_search" {
@@ -163,10 +228,18 @@ resource "azurerm_container_registry" "main" {
   zone_redundancy_enabled = var.container_registry_sku == "Premium" ? true : false
 
   identity {
-    type = "SystemAssigned"
+    type         = "SystemAssigned, UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_cmk[0].id]
+  }
+
+  encryption {
+    key_vault_key_id   = var.cmk_key_versionless_ids["acr"]
+    identity_client_id = azurerm_user_assigned_identity.acr_cmk[0].client_id
   }
 
   tags = var.tags
+
+  depends_on = [azurerm_role_assignment.acr_cmk_crypto_user]
 }
 
 resource "azurerm_private_endpoint" "acr" {

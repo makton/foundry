@@ -61,6 +61,41 @@ resource "azurerm_role_assignment" "kv_deployer_admin" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+# ── Customer-Managed Keys ─────────────────────────────────────────────────────
+# One RSA-4096 key per resource that supports CMK. All keys auto-rotate 30 days before expiry.
+
+locals {
+  cmk_resources = toset([
+    "storage",
+    "func-storage",
+    "cosmosdb",
+    "openai",
+    "search",
+    "acr",
+    "aif",
+  ])
+}
+
+resource "azurerm_key_vault_key" "cmk" {
+  for_each = local.cmk_resources
+
+  name         = "cmk-${each.key}"
+  key_vault_id = azurerm_key_vault.main.id
+  key_type     = var.key_vault_sku == "premium" ? "RSA-HSM" : "RSA"
+  key_size     = 4096
+  key_opts     = ["decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"]
+
+  rotation_policy {
+    automatic {
+      time_before_expiry = "P30D"
+    }
+    expire_after         = "P1Y"
+    notify_before_expiry = "P30D"
+  }
+
+  depends_on = [azurerm_role_assignment.kv_deployer_admin]
+}
+
 # ── Private Endpoint ──────────────────────────────────────────────────────────
 
 resource "azurerm_private_endpoint" "key_vault" {

@@ -14,27 +14,6 @@ variable "instance_number" {
   type = string
 }
 
-variable "storage_account_id" {
-  description = "Storage account resource ID for AI Hub"
-  type        = string
-}
-
-variable "key_vault_id" {
-  description = "Key Vault resource ID for AI Hub"
-  type        = string
-}
-
-variable "application_insights_id" {
-  description = "Application Insights resource ID for AI Hub"
-  type        = string
-}
-
-variable "container_registry_id" {
-  description = "Container Registry resource ID (optional)"
-  type        = string
-  default     = null
-}
-
 variable "openai_id" {
   description = "Azure OpenAI resource ID"
   type        = string
@@ -72,17 +51,14 @@ variable "cosmosdb_database_name" {
   type        = string
 }
 
-variable "managed_network_isolation" {
-  description = "AI Hub managed network isolation mode"
-  type        = string
-  default     = "AllowOnlyApprovedOutbound"
-}
-
 variable "ai_projects" {
-  description = "Map of AI projects to create"
+  description = "Map of AI projects to create. Each project gets three Entra security groups (admins/developers/readers) with RBAC scoped to that project."
   type = map(object({
-    description  = optional(string, "")
-    display_name = optional(string, "")
+    description       = optional(string, "")
+    display_name      = optional(string, "")
+    admin_members     = optional(list(string), [])  # Entra object IDs → Azure AI Administrator on this project
+    developer_members = optional(list(string), [])  # Entra object IDs → Azure AI Developer on this project
+    reader_members    = optional(list(string), [])  # Entra object IDs → Reader on this project
   }))
 }
 
@@ -91,13 +67,9 @@ variable "tenant_id" {
   type        = string
 }
 
-variable "private_endpoint_subnet_id" {
-  type = string
-}
-
-variable "private_dns_zone_ids" {
-  description = "Map with keys: ml_api, ml_notebooks"
-  type        = map(string)
+variable "agents_subnet_id" {
+  description = "Agents subnet ID for AI Foundry VNet injection"
+  type        = string
 }
 
 variable "ai_hub_owners" {
@@ -116,6 +88,16 @@ variable "ai_hub_readers" {
   description = "Principal IDs for Reader role"
   type        = list(string)
   default     = []
+}
+
+variable "cmk_key_versionless_id" {
+  description = "Versionless Key Vault key ID for CMK on the AI Foundry hub."
+  type        = string
+}
+
+variable "cmk_key_id" {
+  description = "ARM resource ID of the CMK key, used to scope the RBAC grant."
+  type        = string
 }
 
 variable "log_analytics_id" {

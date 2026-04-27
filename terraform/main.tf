@@ -116,9 +116,12 @@ module "storage" {
     dfs   = module.networking.private_dns_zone_ids["dfs"]
   }
 
+  cmk_key_versionless_id = module.security.cmk_key_versionless_ids["storage"]
+  cmk_key_id             = module.security.cmk_key_ids["storage"]
+
   tags = local.common_tags
 
-  depends_on = [module.networking]
+  depends_on = [module.networking, module.security]
 }
 
 module "ai_services" {
@@ -150,9 +153,20 @@ module "ai_services" {
     acr       = module.networking.private_dns_zone_ids["acr"]
   }
 
+  cmk_key_versionless_ids = {
+    openai = module.security.cmk_key_versionless_ids["openai"]
+    search = module.security.cmk_key_versionless_ids["search"]
+    acr    = module.security.cmk_key_versionless_ids["acr"]
+  }
+  cmk_key_ids = {
+    openai = module.security.cmk_key_ids["openai"]
+    search = module.security.cmk_key_ids["search"]
+    acr    = module.security.cmk_key_ids["acr"]
+  }
+
   tags = local.common_tags
 
-  depends_on = [module.networking, module.monitoring]
+  depends_on = [module.networking, module.monitoring, module.security]
 }
 
 module "ai_foundry" {
@@ -163,11 +177,6 @@ module "ai_foundry" {
   location            = var.location
   instance_number     = var.instance_number
 
-  storage_account_id      = module.storage.storage_account_id
-  key_vault_id            = module.security.key_vault_id
-  application_insights_id = module.monitoring.application_insights_id
-  container_registry_id   = var.enable_container_registry ? module.ai_services.container_registry_id : null
-
   openai_id               = module.ai_services.openai_id
   openai_endpoint         = module.ai_services.openai_endpoint
   ai_search_id            = var.enable_ai_search ? module.ai_services.ai_search_id : null
@@ -177,19 +186,17 @@ module "ai_foundry" {
   cosmosdb_id            = module.cosmosdb.account_id
   cosmosdb_database_name = module.cosmosdb.database_name
 
-  managed_network_isolation = var.ai_hub_managed_network_isolation
-  ai_projects               = var.ai_projects
+  ai_projects = var.ai_projects
 
-  tenant_id                  = data.azurerm_client_config.current.tenant_id
-  private_endpoint_subnet_id = module.networking.private_endpoints_subnet_id
-  private_dns_zone_ids = {
-    ml_api       = module.networking.private_dns_zone_ids["ml_api"]
-    ml_notebooks = module.networking.private_dns_zone_ids["ml_notebooks"]
-  }
+  tenant_id        = data.azurerm_client_config.current.tenant_id
+  agents_subnet_id = module.networking.agents_subnet_id
 
   ai_hub_owners       = var.ai_hub_owners
   ai_hub_contributors = var.ai_hub_contributors
   ai_hub_readers      = var.ai_hub_readers
+
+  cmk_key_versionless_id = module.security.cmk_key_versionless_ids["aif"]
+  cmk_key_id             = module.security.cmk_key_ids["aif"]
 
   log_analytics_id = module.monitoring.log_analytics_workspace_id
 
@@ -375,6 +382,9 @@ module "function_app" {
   foundry_agent_endpoint          = var.foundry_agent_endpoint
   cosmosdb_eval_container         = var.cosmosdb_eval_container
 
+  cmk_key_versionless_id = module.security.cmk_key_versionless_ids["func-storage"]
+  cmk_key_id             = module.security.cmk_key_ids["func-storage"]
+
   log_analytics_id                       = module.monitoring.log_analytics_workspace_id
   application_insights_connection_string = module.monitoring.application_insights_connection_string
 
@@ -408,6 +418,9 @@ module "cosmosdb" {
   private_dns_zone_cosmosdb  = module.networking.private_dns_zone_ids["cosmosdb"]
   function_app_subnet_id     = module.networking.function_app_subnet_id
 
+  cmk_key_versionless_id = module.security.cmk_key_versionless_ids["cosmosdb"]
+  cmk_key_id             = module.security.cmk_key_ids["cosmosdb"]
+
   log_analytics_id = module.monitoring.log_analytics_workspace_id
 
   tags = local.common_tags
@@ -415,6 +428,7 @@ module "cosmosdb" {
   depends_on = [
     module.networking,
     module.monitoring,
+    module.security,
   ]
 }
 

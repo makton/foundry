@@ -31,8 +31,6 @@ locals {
     cognitive        = "privatelink.cognitiveservices.azure.com"
     search           = "privatelink.search.windows.net"
     acr              = "privatelink.azurecr.io"
-    ml_api           = "privatelink.api.azureml.ms"
-    ml_notebooks     = "privatelink.notebooks.azure.net"
     monitor          = "privatelink.monitor.azure.com"
     oms              = "privatelink.oms.opinsights.azure.com"
     ods              = "privatelink.ods.opinsights.azure.com"

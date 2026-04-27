@@ -90,6 +90,16 @@ variable "private_dns_zone_ids" {
   type        = map(string)
 }
 
+variable "cmk_key_versionless_ids" {
+  description = "Map of resource → versionless Key Vault key ID for CMK. Required keys: openai, search, acr."
+  type        = map(string)
+}
+
+variable "cmk_key_ids" {
+  description = "Map of resource → ARM resource ID of the CMK key for RBAC. Required keys: openai, search, acr."
+  type        = map(string)
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

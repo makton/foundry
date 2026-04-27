@@ -1,5 +1,18 @@
 # ── CosmosDB Account ──────────────────────────────────────────────────────────
 
+resource "azurerm_user_assigned_identity" "cmk" {
+  name                = "id-cosmos-${var.name}-${var.instance_number}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
+
+resource "azurerm_role_assignment" "cmk_crypto_user" {
+  scope                = var.cmk_key_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.cmk.principal_id
+}
+
 resource "azurerm_cosmosdb_account" "main" {
   name                = "cosmos-${var.name}-${var.instance_number}"
   location            = var.location
@@ -49,10 +62,16 @@ resource "azurerm_cosmosdb_account" "main" {
   }
 
   identity {
-    type = "SystemAssigned"
+    type         = "SystemAssigned, UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.cmk.id]
   }
 
+  default_identity_type = "UserAssignedIdentity=${azurerm_user_assigned_identity.cmk.id}"
+  key_vault_key_id      = var.cmk_key_versionless_id
+
   tags = var.tags
+
+  depends_on = [azurerm_role_assignment.cmk_crypto_user]
 }
 
 # ── SQL Database ──────────────────────────────────────────────────────────────
